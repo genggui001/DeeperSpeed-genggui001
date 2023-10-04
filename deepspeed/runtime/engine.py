@@ -2604,21 +2604,23 @@ class DeepSpeedEngine(Module):
                                                          load_module_only=load_module_only,
                                                          custom_load_fn=custom_load_fn)
 
-        if not load_module_only and load_optimizer_states:
-            load_zero_checkpoint = self.zero_optimization() or self.bfloat16_enabled()
-            if load_zero_checkpoint and load_path is not None:
+        load_zero_checkpoint = self.zero_optimization() or self.bfloat16_enabled()
+        if load_zero_checkpoint and load_path is not None:
+            load_zero_checkpoint_success = False
+            if not load_module_only and load_optimizer_states:
                 try:
-                    success = self._load_zero_checkpoint(
+                    load_zero_checkpoint_success = self._load_zero_checkpoint(
                         load_dir,
                         tag,
                         load_optimizer_states=load_optimizer_states)
                 except FileNotFoundError:
-                    success = False
-                if not success:
-                    self.optimizer._restore_from_bit16_weights()
+                    load_zero_checkpoint_success = False
 
-            if self.zero_optimization_partition_weights():
-                self.optimizer.checkpoint_event_epilogue()
+            if not load_zero_checkpoint_success:
+                self.optimizer._restore_from_bit16_weights()
+
+        if self.zero_optimization_partition_weights():
+            self.optimizer.checkpoint_event_epilogue()
 
         return load_path, client_states
 
