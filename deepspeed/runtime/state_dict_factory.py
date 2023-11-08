@@ -17,6 +17,12 @@ from .weight_quantizer import WeightQuantization
 
 AUTO_MODULE_KEY = 'auto'
 
+HAS_MSAMP = True
+try:
+    from msamp.common.tensor import ScalingTensor
+except ImportError:
+    HAS_MSAMP = False
+
 
 class SDLoaderFactory:
 
@@ -323,16 +329,16 @@ class MegatronSDLoader(SDLoaderBase):
             value_list = [sd[key] for sd in client_sd_list]
 
             if (
-                "attention.dense.weight" in key 
-                or "mlp.dense_4h_to_h.weight" in key 
-                or "mlp.w2.weight" in key
-                or "output_linear.weight" in key
+                "attention.dense.linear.weight" in key 
+                or "mlp.dense_4h_to_h.linear.weight" in key 
+                or "mlp.w2.linear.weight" in key
+                or "output_linear.linear.weight" in key
             ):
                 if quantize:
                     value_list = quantizer.Quantize(value_list, quantize_bits, groups, key=key, merge_dim=1)
                 new_client_sd[key] = torch.cat(value_list, axis=1)
-            elif "attention.query_key_value" in key:
-                if quantize and "attention.query_key_value.weight" in key:
+            elif "attention.query_key_value.linear" in key:
+                if quantize and "attention.query_key_value.linear.weight" in key:
                     value_list = quantizer.Quantize(value_list, quantize_bits, groups, key=key)
                     new_client_sd[key] = torch.cat(value_list, axis=0)
                 else:
@@ -341,22 +347,17 @@ class MegatronSDLoader(SDLoaderBase):
                     else:
                         new_client_sd[key] = self.merge_query_key_value(value_list, ckpt_ver)
             elif (
-                "mlp.dense_h_to_4h.weight" in key 
-                or "mlp.dense_h_to_4h.bias" in key 
-                or "word_embeddings.weight" in key 
-                or "final_linear.weight" in key
-                or "final_linear.bias" in key
-                or "input_linear.weight" in key
-                or "input_linear.bias" in key
-                or "mlp.w1.weight" in key
-                or "mlp.w1.bias" in key
-                or "mlp.w3.weight" in key
-                or "mlp.w3.bias" in key
+                "word_embeddings.weight" in key 
+                or "mlp.dense_h_to_4h.linear" in key 
+                or "final_linear.linear" in key
+                or "input_linear.linear" in key
+                or "mlp.w1.linear" in key
+                or "mlp.w3.linear" in key
             ):
                 if quantize and (
-                    "mlp.dense_h_to_4h.weight" in key
-                    or "mlp.w1.weight" in key
-                    or "mlp.w3.weight" in key
+                    "mlp.dense_h_to_4h.linear.weight" in key
+                    or "mlp.w1.linear.weight" in key
+                    or "mlp.w3.linear.weight" in key
                 ):
                     value_list = quantizer.Quantize(value_list, quantize_bits, groups, key=key)
                 new_client_sd[key] = torch.cat(value_list, axis=0)
@@ -392,11 +393,18 @@ class MegatronSDLoader(SDLoaderBase):
         for key in client_sd.keys():
             value = client_sd[key]
 
+            is_scaling_tensor = False
+            scaling_meta = None
+            if HAS_MSAMP and isinstance(value, ScalingTensor):
+                scaling_meta = value.meta
+                is_scaling_tensor = True
+                value = value.value
+
             if (
-                "attention.dense.weight" in key 
-                or "mlp.dense_4h_to_h.weight" in key 
-                or "mlp.w2.weight" in key
-                or "output_linear.weight" in key
+                "attention.dense.linear.weight" in key 
+                or "mlp.dense_4h_to_h.linear.weight" in key 
+                or "mlp.w2.linear.weight" in key
+                or "output_linear.linear.weight" in key
             ):
                 assert value.shape[1] % num_to_split == 0
                 split_size = value.shape[1] // num_to_split
@@ -404,36 +412,34 @@ class MegatronSDLoader(SDLoaderBase):
                     q_vals = quantizer.Quantize([value], quantize_bits, groups, key)
                     value = q_vals[0]
                 new_client_sd[key] = torch.split(value, split_size, dim=1)[ckpt_offset]
-            elif "attention.query_key_value" in key:
-                if quantize and "attention.query_key_value.weight" in key:
+            elif "attention.query_key_value.linear" in key:
+                if quantize and "attention.query_key_value.linear.weight" in key:
                     q_vals = quantizer.Quantize([value], quantize_bits, groups, key)
                     value = q_vals[0]
                 new_client_sd[key] = self.split_query_key_value(value, num_to_split, ckpt_offset, ckpt_ver)
             elif (
-                "mlp.dense_h_to_4h.weight" in key 
-                or "mlp.dense_h_to_4h.bias" in key 
-                or "word_embeddings.weight" in key 
-                or "final_linear.weight" in key
-                or "final_linear.bias" in key
-                or "input_linear.weight" in key
-                or "input_linear.bias" in key
-                or "mlp.w1.weight" in key
-                or "mlp.w1.bias" in key
-                or "mlp.w3.weight" in key
-                or "mlp.w3.bias" in key
+                "word_embeddings.weight" in key 
+                or "mlp.dense_h_to_4h.linear" in key
+                or "final_linear.linear" in key
+                or "input_linear.linear" in key
+                or "mlp.w1.linear" in key
+                or "mlp.w3.linear" in key
             ):
                 assert value.shape[0] % num_to_split == 0
                 split_size = value.shape[0] // num_to_split
                 if quantize and (
-                    "mlp.dense_h_to_4h.weight" in key
-                    or "mlp.w1.weight" in key
-                    or "mlp.w3.weight" in key
+                    "mlp.dense_h_to_4h.linear.weight" in key
+                    or "mlp.w1.linear.weight" in key
+                    or "mlp.w3.linear.weight" in key
                 ):
                     q_vals = quantizer.Quantize([value], quantize_bits, groups, key)
                     value = q_vals[0]
                 new_client_sd[key] = torch.split(value, split_size, dim=0)[ckpt_offset]
             else:
                 new_client_sd[key] = value
+
+            if is_scaling_tensor == True:
+                new_client_sd[key] = ScalingTensor(value=new_client_sd[key], meta=scaling_meta)
 
         if quantize:
             all_scales = quantizer.merge_scales_split(num_to_split)
@@ -444,19 +450,19 @@ class MegatronSDLoader(SDLoaderBase):
 
     def sanity_check(self, ckpt_file_name):
         keys_to_check = [
-            "attention.dense.weight", 
-            "mlp.dense_4h_to_h.weight", 
-            "mlp.w2.weight", 
-            "output_linear.weight", 
+            "attention.dense.linear.weight", 
+            "mlp.dense_4h_to_h.linear.weight", 
+            "mlp.w2.linear.weight", 
+            "output_linear.linear.weight", 
             "attention.query_key_value",
-            "mlp.dense_h_to_4h.weight", 
-            "mlp.dense_h_to_4h.bias", 
-            "mlp.w1.weight",
-            "mlp.w1.bias",
-            "mlp.w3.weight",
-            "mlp.w3.bias",
-            "input_linear.weight",
-            "input_linear.bias",
+            "mlp.dense_h_to_4h.linear.weight", 
+            "mlp.dense_h_to_4h.linear.bias", 
+            "mlp.w1.linear.weight",
+            "mlp.w1.linear.bias",
+            "mlp.w3.linear.weight",
+            "mlp.w3.linear.bias",
+            "input_linear.linear.weight",
+            "input_linear.linear.bias",
         ]
 
         sd = self.checkpoint_engine.load(ckpt_file_name, map_location=lambda storage, loc: storage)
