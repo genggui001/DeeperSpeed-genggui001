@@ -5,11 +5,10 @@
 
 import os
 import re
-import stat
+import fsspec
 import torch
 import hashlib
 from collections import defaultdict, OrderedDict, deque
-from shutil import copyfile
 import gc
 
 from torch.nn.modules import Module
@@ -61,7 +60,7 @@ from deepspeed.runtime.sparse_tensor import SparseTensor
 
 from deepspeed.runtime import lr_schedules
 from deepspeed.utils import groups
-from deepspeed.utils import logger, log_dist, instrument_w_nvtx
+from deepspeed.utils import logger, log_dist, instrument_w_nvtx, timeout_and_retry, glob_use_fsspec, exists_use_fsspec
 from deepspeed.utils.timer import ThroughputTimer, SynchronizedWallClockTimer
 from deepspeed.utils.debug import debug_extract_module_and_param_names
 from deepspeed.monitor.monitor import MonitorMaster
@@ -2537,12 +2536,31 @@ class DeepSpeedEngine(Module):
 
     def _get_all_ckpt_names(self, checkpoints_path, tag):
         # It is required that (checkpoints_path, tag) are consistent among all ranks.
-        ckpt_file_pattern = self._get_ckpt_name(checkpoints_path, tag, mp_placeholder="*")
-        import glob
-
-        ckpt_files = glob.glob(ckpt_file_pattern)
+        # import glob
+        ckpt_files = glob_use_fsspec(
+            base_path=checkpoints_path,
+            pathname=self._get_ckpt_name("", tag, mp_placeholder="*"),
+        )
         ckpt_files.sort()
         return ckpt_files
+
+    @timeout_and_retry(
+        num_retries=int(os.environ.get("MFSSPEC_NUM_RETRIES", "5")),
+        one_retry_timeout=int(os.environ.get("MFSSPEC_TIMEOUT", "1800")),
+        finally_skip_error=True,
+    )
+    def _load_str_use_fsspec(self, path):
+        with fsspec.open(path, "r", encoding="utf8") as fd:
+            return fd.read()
+
+    @timeout_and_retry(
+        num_retries=int(os.environ.get("MFSSPEC_NUM_RETRIES", "5")),
+        one_retry_timeout=int(os.environ.get("MFSSPEC_TIMEOUT", "1800")),
+        finally_skip_error=True,
+    )
+    def _save_str_use_fsspec(self, content, path):
+        with fsspec.open(path, 'w', encoding="utf8") as fd:
+            fd.write(content)
 
     def load_checkpoint(self,
                         load_dir,
@@ -2579,9 +2597,9 @@ class DeepSpeedEngine(Module):
         if tag is None:
             latest_tag = "latest_universal" if self.load_universal_checkpoint() else "latest"
             latest_path = os.path.join(load_dir, latest_tag)
-            if os.path.isfile(latest_path):
-                with open(latest_path, "r") as fd:
-                    tag = fd.read().strip()
+            tmp_tag = self._load_str_use_fsspec(latest_path)
+            if tmp_tag is not None:
+                tag = tmp_tag.strip()
             else:
                 if self.load_universal_checkpoint():
                     raise ValueError(f'Invalid for universal checkpoint: {latest_path} does not exist')
@@ -2798,11 +2816,11 @@ class DeepSpeedEngine(Module):
                                                                   dp_world_size=self.loaded_checkpoint_dp_world_size,
                                                                   bf16_mode=bf16_mode)
         for i, ckpt_name in enumerate(zero_ckpt_names):
-            if not os.path.exists(ckpt_name):
+            if not exists_use_fsspec(ckpt_name):
                 # transparently handle the old file pattern for optim_states
                 if "optim_states.pt" in ckpt_name:
                     ckpt_name_try = ckpt_name.replace("_optim_states.pt", "optim_states.pt")
-                    if os.path.exists(ckpt_name_try):
+                    if exists_use_fsspec(ckpt_name_try):
                         zero_ckpt_names[i] = ckpt_name_try
                         continue
 
@@ -2919,8 +2937,10 @@ class DeepSpeedEngine(Module):
         # Save latest checkpoint tag
         self.checkpoint_engine.commit(tag)
         if save_latest and rank == 0:
-            with open(os.path.join(save_dir, 'latest'), 'w') as fd:
-                fd.write(tag)
+            self._save_str_use_fsspec(
+                content=tag,
+                path=os.path.join(save_dir, 'latest'),
+            )
 
         dist.barrier()
 
@@ -3230,12 +3250,13 @@ class DeepSpeedEngine(Module):
     def _copy_recovery_script(self, save_path):
         base_dir = os.path.dirname(os.path.dirname(__file__))
         script = "zero_to_fp32.py"
-        src = os.path.join(base_dir, "utils", script)
-        dst = os.path.join(save_path, script)
-        #logger.info(f"creating recovery script {dst}")
-        copyfile(src, dst)
-        # make executable
-        os.chmod(dst, os.stat(dst).st_mode | stat.S_IEXEC)
+        # load local not retry
+        src_b = self._load_str_use_fsspec(os.path.join(base_dir, 'utils', script))
+        assert src_b is not None
+        self._save_str_use_fsspec(
+            content=src_b,
+            path=os.path.join(save_path, script),
+        )
 
     def _save_zero_checkpoint(self, save_path, tag):
         zero_checkpoint_name = self._get_zero_ckpt_name(save_path, tag)

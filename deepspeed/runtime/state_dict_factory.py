@@ -4,13 +4,12 @@
 # DeepSpeed Team
 
 import torch
-import os
 import copy
 import collections
 import json
 from abc import ABC, abstractmethod
 
-from deepspeed.utils import logger
+from deepspeed.utils import logger, exists_use_fsspec
 from deepspeed.runtime.checkpoint_engine.torch_checkpoint_engine import TorchCheckpointEngine
 
 from .weight_quantizer import WeightQuantization
@@ -98,7 +97,7 @@ class SDLoaderBase(ABC):
 
         merge_count = 1
         if num_ckpt == mp_world_size:
-            assert os.path.exists(load_path)
+            assert exists_use_fsspec(load_path)
             #logger.info(f'rank: {mp_rank} loading checkpoint: {load_path}')
             sd = self.checkpoint_engine.load(load_path, map_location=lambda storage, \
                 loc: storage)

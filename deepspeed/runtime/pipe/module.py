@@ -4,8 +4,6 @@
 # DeepSpeed Team
 
 import os
-import glob
-
 import re as regex
 
 from functools import partial
@@ -14,7 +12,7 @@ import torch
 import torch.nn as nn
 from deepspeed import comm as dist
 
-from deepspeed.utils import logger
+from deepspeed.utils import logger, glob_use_fsspec
 from .. import utils as ds_utils
 from ..activation_checkpointing import checkpointing
 from .topology import PipeDataParallelTopology, PipelineParallelGrid
@@ -538,9 +536,10 @@ class PipelineModule(nn.Module):
     def ckpt_layer_path_list(self, ckpt_dir, local_layer_idx):
         """Get all ckpt file list for a specific pipeline module layer. """
         idx = local_layer_idx + self._local_start
-        layer_ckpt_path = os.path.join(ckpt_dir, f'layer_{idx:02d}-')
-        layer_ckpt_path += "*model_states.pt"
-        ckpt_files = glob.glob(layer_ckpt_path)
+        ckpt_files = glob_use_fsspec(
+            base_path=ckpt_dir,
+            pathname=f'layer_{idx:02d}-*model_states.pt',
+        )
         ckpt_files.sort()
         return ckpt_files
 
