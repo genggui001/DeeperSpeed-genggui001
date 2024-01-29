@@ -2559,7 +2559,7 @@ class DeepSpeedEngine(Module):
         finally_skip_error=True,
     )
     def _save_str_use_fsspec(self, content, path):
-        with fsspec.open(path, 'w', encoding="utf8") as fd:
+        with fsspec.open(path, 'w', encoding="utf8", auto_mkdir=False) as fd:
             fd.write(content)
 
     def load_checkpoint(self,

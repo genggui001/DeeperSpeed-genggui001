@@ -27,6 +27,9 @@ class TorchCheckpointEngine(CheckpointEngine):
         finally_skip_error=False,
     )
     def makedirs(self, path, exist_ok=False):
+        # skip s3
+        if path.startswith("s3://"):
+            return
         UPath(path).mkdir(parents=True, exist_ok=exist_ok)
 
     @timeout_and_retry(
@@ -36,7 +39,7 @@ class TorchCheckpointEngine(CheckpointEngine):
     )
     def save(self, state_dict, path: str):
         logger.info(f"[Torch] Saving {path}...")
-        with fsspec.open(path, "wb") as f:
+        with fsspec.open(path, "wb", auto_mkdir=False) as f:
             torch.save(state_dict, f)
         logger.info(f"[Torch] Saved {path}.")
         return None
